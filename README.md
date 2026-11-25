@@ -53,5 +53,68 @@ so training FLOPs are matched:
 python -m moe.train --exp all --device cuda --out results   # resumable: one JSON line per run
 ```
 
-**Results are pending.** The runs are executing on Colab GPUs, and the tables will be
-filled in from `results/runs.jsonl`.
+## Results (Tesla T4, fp16 with loss scaling, 3,000 steps, seed 0)
+
+The raw records are in [`results/runs.jsonl`](results/runs.jsonl). The default MoE (8
+experts, top-2, aux 0.01, capacity 1.25) appears in all four groups. Its four runs, with
+the same seed, give **1.373–1.384 bits/byte**. That ±0.006 spread comes from GPU
+nondeterminism in the scatter-add and is the noise floor for every comparison below.
+
+**Dense vs MoE** (active = parameters used per token):
+
+| model | active / total params | val bits/byte | wall time |
+|---|---|---|---|
+| dense | 3.29M / 3.29M | 1.381 | 67 s |
+| MoE 8 × top-2 | 3.29M / 9.59M | 1.376 | 160 s |
+| MoE 8 × top-2 + 1 shared expert (narrower experts) | 2.77M / 5.92M | 1.412 | 155 s |
+| dense, 4× MLP width (= MoE total params) | 9.59M / 9.59M | **1.353** | 141 s |
+
+**Balance loss**:
+
+| aux coefficient | dropped tokens | load CV | val bits/byte |
+|---|---|---|---|
+| 0 | 45.4% | 1.18 | 1.524 |
+| 0.001 | 6.0% | 0.29 | 1.452 |
+| 0.01 | 0.1% | 0.14 | 1.373 |
+| 0.1 | 0.0% | 0.10 | 1.375 |
+
+**Capacity factor**:
+
+| capacity factor | dropped tokens | val bits/byte |
+|---|---|---|
+| 0.5 | 50.1% | 1.628 |
+| 1.0 | 5.2% | 1.408 |
+| 1.25 | 0.1% | 1.383 |
+| 2.0 | 0.0% | 1.398 |
+
+**Routing**:
+
+| routing | dropped | val bits/byte | wall time |
+|---|---|---|---|
+| token choice, top-2 | 0.1% | 1.384 | 157 s |
+| expert choice, cf = 1 | 0% (by construction) | 1.382 | 98 s |
+| Switch top-1, 2× expert width | 0.8% | 1.430 | 141 s |
+
+### What it shows
+
+- **At this scale, MoE matches dense at equal active parameters but does not beat it.**
+  1.376 against 1.381 is inside the noise floor. Its 3× extra parameters buy nothing yet,
+  while a dense model *of the same total size* is clearly better (1.353). The MoE scaling
+  advantage reported in the literature appears with more experts, data and steps than
+  3,000 steps on 10 MB of bytes. This is the honest small-scale result, not a failure of the
+  layer.
+- **The balance loss is what keeps MoE alive.** Without it the router collapses onto a few
+  experts (load CV 1.18), and with capacity limits that drops 45% of tokens, costing 0.15
+  bits/byte. 0.01 is the sweet spot; 0.1 balances harder for no gain.
+- **Dropped tokens cost loss almost linearly.** Halving capacity drops half the tokens and
+  costs 0.25 bits/byte. Above about 1.25 there is nothing left to gain.
+- **Expert choice ties token choice on loss and is 1.6× faster here.** Each expert takes
+  exactly C tokens, so the dispatch is a fixed-shape gather with no capacity bookkeeping.
+- **Top-1 with double-width experts is worse than top-2** at the same active parameters
+  (1.430 vs 1.384).
+- **MoE costs 2.4× the wall time of dense** in this implementation: plain PyTorch dispatch
+  with a scatter-add combine and no fused grouped-GEMM kernel. That is the systems side of
+  MoE: matched FLOPs do not mean matched time without a dispatch kernel.
+
+Caveats: one seed per configuration (bounded by the four repeated runs above), a small
+model, and a short budget.
