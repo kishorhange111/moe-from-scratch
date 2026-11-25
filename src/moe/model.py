@@ -98,8 +98,8 @@ def param_counts(model: GPT) -> dict:
     for b in model.blocks:
         if isinstance(b.ff, MoE):
             per_expert = b.ff.w1[0].numel() + b.ff.w2[0].numel()
-            active -= per_expert * (b.ff.E - (c.k if c.routing == "token_choice" else 0))
-            if c.routing == "expert_choice":  # on average each token sees E*C/T = k*cf experts
-                active -= per_expert * b.ff.E
-                active += per_expert * c.k * c.capacity_factor
+            # expert choice: each expert takes C = cf·k·T/E tokens, so a token sees k·cf
+            # experts on average
+            used = c.k if c.routing == "token_choice" else c.k * c.capacity_factor
+            active -= per_expert * (b.ff.E - used)
     return {"total": total, "active": int(active), "non_embedding_active": int(active - emb)}

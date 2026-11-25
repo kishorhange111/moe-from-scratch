@@ -82,6 +82,22 @@ def test_active_params_match_dense_baseline():
     biases = 2 * (256 + 64)  # dense MLP biases; the experts have none
     assert moe["active"] == dense["active"] + router - biases
     assert moe["total"] > 3 * dense["total"] - 4 * 64 * 64 * 2 * 2
+    # expert choice with cf = 1 activates k·cf = 2 experts per token on average: same count
+    ec = param_counts(
+        GPT(
+            Config(
+                **{
+                    **base.__dict__,
+                    "n_experts": 8,
+                    "k": 2,
+                    "d_ff": 128,
+                    "routing": "expert_choice",
+                    "capacity_factor": 1.0,
+                }
+            )
+        )
+    )
+    assert ec["active"] == moe["active"]
 
 
 def test_tiny_moe_trains():
