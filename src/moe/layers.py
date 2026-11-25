@@ -119,7 +119,7 @@ class MoE(nn.Module):
         y = self._experts(buf.view(E, C, -1)).view(E * C, -1)
 
         # Combine: gather each kept assignment's output, weight by its gate, sum per token.
-        out = torch.zeros_like(x)
+        out = x.new_zeros(x.shape, dtype=y.dtype)  # experts may run in fp16 under autocast
         out.index_add_(0, tok, y[flat_slot] * gate[keep].unsqueeze(1).to(y.dtype))
 
         f = F.one_hot(idx, E).sum(1).float().mean(0) / k  # assignment fraction per expert
@@ -139,7 +139,7 @@ class MoE(nn.Module):
         C = min(C, T)
         gate, tok = probs.t().topk(C, dim=-1)  # (E, C): each expert's chosen tokens
         y = self._experts(x[tok])  # (E, C, d)
-        out = torch.zeros_like(x)
+        out = x.new_zeros(x.shape, dtype=y.dtype)
         out.index_add_(0, tok.reshape(-1), (y * gate.unsqueeze(-1).to(y.dtype)).reshape(E * C, -1))
         counts = torch.bincount(tok.reshape(-1), minlength=T)
         stats = RouterStats(
