@@ -53,6 +53,8 @@ def run(cfg: Config, steps: int, bs: int, lr: float, aux_coef: float, z_coef: fl
     model = GPT(cfg).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.95), weight_decay=0.1)
     amp = device == "cuda"
+    # fp16 autocast needs loss scaling: without it, small gradients flush to zero in fp16.
+    scaler = torch.amp.GradScaler("cuda", enabled=amp)
     hist = []
     t0 = time.time()
     for step in range(1, steps + 1):
@@ -66,9 +68,11 @@ def run(cfg: Config, steps: int, bs: int, lr: float, aux_coef: float, z_coef: fl
         aux = sum((s.aux_loss for s in stats), torch.zeros((), device=device))
         z = sum((s.z_loss for s in stats), torch.zeros((), device=device))
         opt.zero_grad(set_to_none=True)
-        (loss + aux_coef * aux + z_coef * z).backward()
+        scaler.scale(loss + aux_coef * aux + z_coef * z).backward()
+        scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        opt.step()
+        scaler.step(opt)
+        scaler.update()
         if step % eval_every == 0 or step == steps:
             hist.append({"step": step, "train": loss.item(), **evaluate(model, val, cfg, device)})
     out = {
